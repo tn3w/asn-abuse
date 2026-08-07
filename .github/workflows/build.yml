@@ -1,0 +1,35 @@
+name: Build and release abuse contacts
+
+on:
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build abuse-contacts.tsv
+        run: python3 main.py
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(date -u +%Y.%m.%d)
+          rows=$(($(wc -l < abuse-contacts.tsv) - 1))
+          gh release create "$tag" abuse-contacts.tsv --title "$tag" \
+            --notes "Abuse contacts for $rows routed ASNs, built $tag."
+
+      - name: Delete releases beyond the newest six
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release list --limit 100 --json tagName --jq \
+            '[.[].tagName | select(test("^[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}$"))][6:][]' |
+            xargs -r -n1 gh release delete --yes --cleanup-tag
