@@ -4,6 +4,7 @@ Samples the prefixes each ASN announces, asks Abusix for the abuse contact of
 every sample, and keeps the mailbox most of them agree on.
 """
 
+import ipaddress
 import random
 import re
 import socket
@@ -13,7 +14,8 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from threading import local
 
-PREFIX_TABLE_URL = "https://thyme.apnic.net/current/data-raw-table"
+PREFIX_TABLE_URLS = ("https://thyme.apnic.net/current/data-raw-table",
+                     "https://thyme.apnic.net/current/ipv6-raw-table")
 ABUSIX_ZONE = "abuse-contacts.abusix.zone"
 ABUSIX_SERVER = "rbldns-geo.abusix.zone"
 OUTPUT = "abuse-contacts.tsv"
@@ -48,17 +50,35 @@ def sample(prefixes: list[tuple[int, str]]) -> list[str]:
     return [address for _, address in largest + rest]
 
 
-def sampled_prefixes() -> dict[int, list[str]]:
-    """Sampled prefix start addresses per ASN, from the global routing table."""
-    with urllib.request.urlopen(PREFIX_TABLE_URL, timeout=60) as response:
+def read_table(url: str) -> dict[int, list[tuple[int, str]]]:
+    """Prefix lengths and start addresses per ASN, from one routing table."""
+    with urllib.request.urlopen(url, timeout=60) as response:
         table = response.read().decode(errors="replace")
     per_asn: dict[int, list[tuple[int, str]]] = {}
     for line in table.splitlines():
-        prefix, _, asn = line.partition("\t")
-        if asn.isdigit() and asn != "0":
-            address, _, length = prefix.partition("/")
-            per_asn.setdefault(int(asn), []).append((int(length), address))
-    return {asn: sample(prefixes) for asn, prefixes in per_asn.items()}
+        parts = line.split()
+        if len(parts) == 2 and parts[1].isdigit() and parts[1] != "0":
+            address, _, length = parts[0].partition("/")
+            per_asn.setdefault(int(parts[1]), []).append((int(length), address))
+    return per_asn
+
+
+def query_name(address: str) -> str:
+    """The Abusix name for an address, nibble-reversed when it is IPv6."""
+    if ":" in address:
+        digits = ipaddress.IPv6Address(address).exploded.replace(":", "")
+        return ".".join(reversed(digits)) + "." + ABUSIX_ZONE
+    return ".".join(reversed(address.split("."))) + "." + ABUSIX_ZONE
+
+
+def sampled_names() -> dict[int, list[str]]:
+    """Query names per ASN, sampled separately for IPv4 and IPv6 because their
+    prefix lengths are not comparable."""
+    names: dict[int, list[str]] = {}
+    for url in PREFIX_TABLE_URLS:
+        for asn, prefixes in read_table(url).items():
+            names.setdefault(asn, []).extend(map(query_name, sample(prefixes)))
+    return names
 
 
 def encode_query(query_id: int, name: str) -> bytes:
@@ -115,11 +135,10 @@ def query_txt(name: str) -> str:
     return ""
 
 
-def abusix_votes(addresses: list[str]) -> Counter[str]:
+def abusix_votes(names: list[str]) -> Counter[str]:
     """Every mailbox Abusix names for an ASN's sampled prefixes, unfiltered."""
     votes: Counter[str] = Counter()
-    for address in addresses:
-        name = ".".join(reversed(address.split("."))) + "." + ABUSIX_ZONE
+    for name in names:
         votes.update(EMAIL.findall(query_txt(name).lower()))
     return votes
 
@@ -132,7 +151,7 @@ def best_mailbox(votes: Counter[str]) -> str | None:
 
 
 def build() -> None:
-    targets = sampled_prefixes()
+    targets = sampled_names()
     with ThreadPoolExecutor(THREADS) as pool:
         found = dict(zip(targets, pool.map(abusix_votes, targets.values()), strict=True))
     with open(OUTPUT, "w") as out:
