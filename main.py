@@ -18,6 +18,8 @@ from threading import local
 
 DELEGATED_URL = (
     "https://ftp.ripe.net/pub/stats/ripencc/nro-stats/latest/nro-delegated-stats")
+PREFIX_TABLE_URLS = ("https://thyme.apnic.net/current/data-raw-table",
+                     "https://thyme.apnic.net/current/ipv6-raw-table")
 RANGE_TABLE_URL = "https://iptoasn.com/data/ip2asn-combined.tsv.gz"
 RIPE_DUMP_URL = "https://ftp.ripe.net/ripe/dbase/split/ripe.db.{}.gz"
 ABUSIX_ZONE = "abuse-contacts.abusix.zone"
@@ -64,6 +66,19 @@ def delegated_asns() -> set[int]:
         if len(parts) > 6 and parts[2] == "asn" and parts[6] in ("assigned", "allocated"):
             asns.update(range(int(parts[3]), int(parts[3]) + int(parts[4])))
     return asns
+
+
+def read_table(url: str) -> list[tuple[int, int, str]]:
+    """ASN, prefix length and start address of every prefix in one routing table."""
+    with urllib.request.urlopen(url, timeout=60) as response:
+        table = response.read().decode(errors="replace")
+    rows = []
+    for line in table.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1].isdigit() and parts[1] != "0":
+            address, _, length = parts[0].partition("/")
+            rows.append((int(parts[1]), int(length), address))
+    return rows
 
 
 def read_range_table(url: str) -> list[tuple[int, int, str]]:
@@ -127,8 +142,10 @@ def query_name(address: str) -> str:
 def sampled_names() -> dict[int, list[str]]:
     """Query names per ASN, sampled separately for IPv4 and IPv6 because their
     prefix lengths are not comparable."""
+    rows = [row for url in PREFIX_TABLE_URLS for row in read_table(url)]
+    rows += read_range_table(RANGE_TABLE_URL)
     prefixes: dict[tuple[int, bool], set[tuple[int, str]]] = {}
-    for asn, length, address in read_range_table(RANGE_TABLE_URL):
+    for asn, length, address in rows:
         prefixes.setdefault((asn, ":" in address), set()).add((length, address))
     names: dict[int, list[str]] = {}
     for (asn, _), family_prefixes in prefixes.items():
