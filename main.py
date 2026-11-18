@@ -1,8 +1,8 @@
-"""Write abuse-contacts.tsv, the abuse mailbox of every routed autonomous system.
+"""Write abuse-contacts.tsv, the abuse mailbox of every delegated ASN.
 
 Takes the abuse mailbox from the RIPE database where it has one, then samples the
-prefixes of every other ASN, asks Abusix for the abuse contact of every sample and
-keeps the mailbox most of them agree on.
+prefixes of every other delegated ASN, asks Abusix for the abuse contact of every
+sample and keeps the mailbox most of them agree on.
 """
 
 import gzip
@@ -16,8 +16,8 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from threading import local
 
-PREFIX_TABLE_URLS = ("https://thyme.apnic.net/current/data-raw-table",
-                     "https://thyme.apnic.net/current/ipv6-raw-table")
+DELEGATED_URL = (
+    "https://ftp.ripe.net/pub/stats/ripencc/nro-stats/latest/nro-delegated-stats")
 RANGE_TABLE_URL = "https://iptoasn.com/data/ip2asn-combined.tsv.gz"
 RIPE_DUMP_URL = "https://ftp.ripe.net/ripe/dbase/split/ripe.db.{}.gz"
 ABUSIX_ZONE = "abuse-contacts.abusix.zone"
@@ -54,21 +54,20 @@ def sample(prefixes: list[tuple[int, str]]) -> list[str]:
     return [address for _, address in largest + rest]
 
 
-def read_table(url: str) -> list[tuple[int, int, str]]:
-    """ASN, prefix length and start address of every prefix in one routing table."""
-    with urllib.request.urlopen(url, timeout=60) as response:
-        table = response.read().decode(errors="replace")
-    rows = []
-    for line in table.splitlines():
-        parts = line.split()
-        if len(parts) == 2 and parts[1].isdigit() and parts[1] != "0":
-            address, _, length = parts[0].partition("/")
-            rows.append((int(parts[1]), int(length), address))
-    return rows
+def delegated_asns() -> set[int]:
+    """Every ASN a registry has handed out, routed or not."""
+    with urllib.request.urlopen(DELEGATED_URL, timeout=60) as response:
+        lines = response.read().decode(errors="replace").splitlines()
+    asns: set[int] = set()
+    for line in lines:
+        parts = line.split("|")
+        if len(parts) > 6 and parts[2] == "asn" and parts[6] in ("assigned", "allocated"):
+            asns.update(range(int(parts[3]), int(parts[3]) + int(parts[4])))
+    return asns
 
 
 def read_range_table(url: str) -> list[tuple[int, int, str]]:
-    """The same rows from a table of address ranges, which sees ASNs the others miss."""
+    """ASN, prefix length and start address of every routed address range."""
     request = urllib.request.Request(url, headers={"User-Agent": "asn-abuse"})
     with urllib.request.urlopen(request, timeout=120) as response:
         table = gzip.decompress(response.read()).decode(errors="replace")
@@ -128,10 +127,8 @@ def query_name(address: str) -> str:
 def sampled_names() -> dict[int, list[str]]:
     """Query names per ASN, sampled separately for IPv4 and IPv6 because their
     prefix lengths are not comparable."""
-    rows = [row for url in PREFIX_TABLE_URLS for row in read_table(url)]
-    rows += read_range_table(RANGE_TABLE_URL)
     prefixes: dict[tuple[int, bool], set[tuple[int, str]]] = {}
-    for asn, length, address in rows:
+    for asn, length, address in read_range_table(RANGE_TABLE_URL):
         prefixes.setdefault((asn, ":" in address), set()).add((length, address))
     names: dict[int, list[str]] = {}
     for (asn, _), family_prefixes in prefixes.items():
@@ -209,10 +206,11 @@ def best_mailbox(votes: Counter[str]) -> str | None:
 
 
 def build() -> None:
-    targets = sampled_names()
-    found = {asn: mailbox for asn, mailbox in ripe_mailboxes().items() if asn in targets}
+    universe = delegated_asns()
+    targets = {asn: names for asn, names in sampled_names().items() if asn in universe}
+    found = {asn: box for asn, box in ripe_mailboxes().items() if asn in universe}
     remaining = {asn: names for asn, names in targets.items() if asn not in found}
-    print(f"{len(targets)} asns, {len(found)} from RIPE, {len(remaining)} for Abusix")
+    print(f"{len(universe)} asns, {len(found)} from RIPE, {len(remaining)} for Abusix")
     with ThreadPoolExecutor(THREADS) as pool:
         votes = pool.map(abusix_votes, remaining.values())
         for asn, asn_votes in zip(remaining, votes, strict=True):

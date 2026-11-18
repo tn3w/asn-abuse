@@ -22,9 +22,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag=$(date -u +%Y.%m.%d)
+          gh release delete "$tag" --yes --cleanup-tag || true
           rows=$(($(wc -l < abuse-contacts.tsv) - 1))
           gh release create "$tag" abuse-contacts.tsv --title "$tag" \
-            --notes "Abuse contacts for $rows routed ASNs, built $tag."
+            --notes "Abuse contacts for $rows ASNs, built $tag."
 
       - name: Delete releases beyond the newest six
         env:
