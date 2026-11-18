@@ -14,7 +14,8 @@ asn	abuse_email
 3320	abuse@telekom.de
 ```
 
-Over 70,000 of ~85,000 routed ASNs (~84%), IPv4 and IPv6. Rebuilt every Monday from
-the global routing table and the [Abusix](https://abusix.com/contact-db/) contact zone.
+Over 70,000 of ~87,000 routed ASNs, IPv4 and IPv6. Rebuilt every Monday from
+the global routing table, the RIPE database (about a third of all ASNs) and the
+[Abusix](https://abusix.com/contact-db/) contact zone for the rest.
 
 Build it yourself with `python3 main.py`, std library only, about two minutes.
