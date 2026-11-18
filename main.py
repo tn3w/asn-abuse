@@ -19,6 +19,8 @@ from threading import local
 
 DELEGATED_URL = (
     "https://ftp.ripe.net/pub/stats/ripencc/nro-stats/latest/nro-delegated-stats")
+APNIC_TABLE_URLS = ("https://thyme.apnic.net/current/data-raw-table",
+                    "https://thyme.apnic.net/current/ipv6-raw-table")
 ROUTEVIEWS_URL = "https://publicdata.caida.org/datasets/routing/{}/{:%Y/%m}/"
 ROUTEVIEWS_TABLES = (("routeviews-prefix2as", "routeviews-rv2"),
                      ("routeviews6-prefix2as", "routeviews-rv6"))
@@ -97,6 +99,19 @@ def read_table(folder: str, prefix: str) -> list[tuple[int, int, str]]:
     return rows
 
 
+def read_apnic_table(url: str) -> list[tuple[int, int, str]]:
+    """ASN, prefix length and start address of every prefix in one APNIC table."""
+    with urllib.request.urlopen(url, timeout=60) as response:
+        table = response.read().decode(errors="replace")
+    rows = []
+    for line in table.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1].isdigit() and parts[1] != "0":
+            address, _, length = parts[0].partition("/")
+            rows.append((int(parts[1]), int(length), address))
+    return rows
+
+
 def read_range_table(url: str) -> list[tuple[int, int, str]]:
     """ASN, prefix length and start address of every routed address range."""
     request = urllib.request.Request(url, headers={"User-Agent": "asn-abuse"})
@@ -159,6 +174,7 @@ def sampled_names() -> dict[int, list[str]]:
     """Query names per ASN, sampled separately for IPv4 and IPv6 because their
     prefix lengths are not comparable."""
     rows = [row for table in ROUTEVIEWS_TABLES for row in read_table(*table)]
+    rows += [row for url in APNIC_TABLE_URLS for row in read_apnic_table(url)]
     rows += read_range_table(RANGE_TABLE_URL)
     prefixes: dict[tuple[int, bool], set[tuple[int, str]]] = {}
     for asn, length, address in rows:
