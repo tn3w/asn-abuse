@@ -5,6 +5,7 @@ prefixes of every other delegated ASN, asks Abusix for the abuse contact of ever
 sample and keeps the mailbox most of them agree on.
 """
 
+import datetime
 import gzip
 import ipaddress
 import random
@@ -18,8 +19,9 @@ from threading import local
 
 DELEGATED_URL = (
     "https://ftp.ripe.net/pub/stats/ripencc/nro-stats/latest/nro-delegated-stats")
-PREFIX_TABLE_URLS = ("https://thyme.apnic.net/current/data-raw-table",
-                     "https://thyme.apnic.net/current/ipv6-raw-table")
+ROUTEVIEWS_URL = "https://publicdata.caida.org/datasets/routing/{}/{:%Y/%m}/"
+ROUTEVIEWS_TABLES = (("routeviews-prefix2as", "routeviews-rv2"),
+                     ("routeviews6-prefix2as", "routeviews-rv6"))
 RANGE_TABLE_URL = "https://iptoasn.com/data/ip2asn-combined.tsv.gz"
 RIPE_DUMP_URL = "https://ftp.ripe.net/ripe/dbase/split/ripe.db.{}.gz"
 ABUSIX_ZONE = "abuse-contacts.abusix.zone"
@@ -68,16 +70,30 @@ def delegated_asns() -> set[int]:
     return asns
 
 
-def read_table(url: str) -> list[tuple[int, int, str]]:
-    """ASN, prefix length and start address of every prefix in one routing table."""
-    with urllib.request.urlopen(url, timeout=60) as response:
-        table = response.read().decode(errors="replace")
+def latest_routeviews_file(folder: str, prefix: str) -> str:
+    """The newest dump in this month's folder, or last month's early in the month."""
+    today = datetime.date.today()
+    for day in (today, today.replace(day=1) - datetime.timedelta(days=1)):
+        url = ROUTEVIEWS_URL.format(folder, day)
+        with urllib.request.urlopen(url, timeout=60) as response:
+            listing = response.read().decode(errors="replace")
+        names = re.findall(rf"{prefix}-\d{{8}}-\d{{4}}\.pfx2as\.gz", listing)
+        if names:
+            return url + max(names)
+    raise RuntimeError(f"no {prefix} dump found")
+
+
+def read_table(folder: str, prefix: str) -> list[tuple[int, int, str]]:
+    """ASN, prefix length and start address of every prefix in a RouteViews dump,
+    counting each origin of a prefix that has several."""
+    url = latest_routeviews_file(folder, prefix)
+    with urllib.request.urlopen(url, timeout=120) as response:
+        table = gzip.decompress(response.read()).decode(errors="replace")
     rows = []
     for line in table.splitlines():
-        parts = line.split()
-        if len(parts) == 2 and parts[1].isdigit() and parts[1] != "0":
-            address, _, length = parts[0].partition("/")
-            rows.append((int(parts[1]), int(length), address))
+        address, length, origins = line.split("\t")
+        rows.extend((int(asn), int(length), address)
+                    for asn in re.findall(r"\d+", origins) if asn != "0")
     return rows
 
 
@@ -142,7 +158,7 @@ def query_name(address: str) -> str:
 def sampled_names() -> dict[int, list[str]]:
     """Query names per ASN, sampled separately for IPv4 and IPv6 because their
     prefix lengths are not comparable."""
-    rows = [row for url in PREFIX_TABLE_URLS for row in read_table(url)]
+    rows = [row for table in ROUTEVIEWS_TABLES for row in read_table(*table)]
     rows += read_range_table(RANGE_TABLE_URL)
     prefixes: dict[tuple[int, bool], set[tuple[int, str]]] = {}
     for asn, length, address in rows:
